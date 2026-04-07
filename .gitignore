@@ -1,6 +1,32 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+env/
+venv/
+.env
+
+# IDEs
+.vscode/
+.idea/
+
+# Logs and outputs
+logs/
+*.log
+*.out
+
+# Models and large files
+models/
+*.zip
+*.pth
+*.ckpt
+
+# Jupyter
+*.ipynb_checkpoints
+# Python
+__pycache__/
+*.py[cod]
 *$py.class
 *.so
 .Python

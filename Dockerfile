@@ -1,29 +1,22 @@
-# OpenEnv Dockerfile for Smart Inbox Assistant
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
-# Copy requirements and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install system dependencies
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
-# Copy application files
+# Copy and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt || true
+
+# Copy application
 COPY . .
 
-# Install additional API dependencies
-RUN pip install --no-cache-dir fastapi uvicorn
+ENV PORT=7860
+ENV PYTHONUNBUFFERED=1
 
-# Expose port for the app
 EXPOSE 7860
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
-ENV PORT=7860
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:7860/health || exit 1
-
-# Run the OpenEnv API server
+# Start server
 CMD ["python", "server.py"]

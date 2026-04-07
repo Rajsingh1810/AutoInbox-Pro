@@ -1,0 +1,32 @@
+name: smart-inbox-rl
+version: 1.0.0
+description: Smart Inbox Assistant - RL environment for email classification
+
+# API Configuration
+api_base_url: ${API_BASE_URL}
+model_name: ${MODEL_NAME}
+hf_token: ${HF_TOKEN}
+
+# Environment settings
+difficulty_levels:
+  - easy
+  - medium
+  - hard
+
+# Grader configuration
+graders:
+  easy:
+    description: "Spam detection - classify emails as spam or not spam"
+    max_score: 1.0
+  medium:
+    description: "Important email detection - identify important vs casual emails"
+    max_score: 1.0
+  hard:
+    description: "Reply suggestion - determine if email requires a reply"
+    max_score: 1.0
+
+# Validation settings
+validation:
+  timeout: 1200  # 20 minutes
+  max_memory: 8gb
+  vcpu: 2

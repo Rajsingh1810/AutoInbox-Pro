@@ -1,168 +1,127 @@
 """
-OpenEnv Inference API for Smart Inbox Assistant
-This file must be at repo root for OpenEnv validation
+OpenEnv Inference Script for Smart Inbox Assistant
+Must use OpenAI Client and emit [START], [STEP], [END] logs
 """
 
 import os
 import json
-import torch
-import numpy as np
-from typing import Dict, Any, Optional
+import time
+from typing import Dict, Any, List
+from openai import OpenAI
 from email_env import EmailRLEnv
-from stable_baselines3 import PPO
+from openenv_env import SmartInboxEnv, Observation, State, GraderResult
 
 
-class SmartInboxInference:
-    """Inference class for email classification"""
+# Environment variables (MANDATORY per requirements)
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-3.5-turbo")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+
+
+def get_llm_client() -> OpenAI:
+    """Initialize OpenAI client using environment variables"""
+    return OpenAI(
+        api_key=HF_TOKEN,
+        base_url=API_BASE_URL
+    )
+
+
+def classify_email_with_llm(email_text: str, difficulty: str) -> int:
+    """
+    Use LLM to classify email
+    Returns action: 0=spam, 1=important, 2=ignore, 3=reply
+    """
+    client = get_llm_client()
     
-    def __init__(self):
-        """Initialize inference with trained model"""
-        self.env = None
-        self.model = None
-        self.model_loaded = False
-        self.action_names = ["mark_spam", "mark_important", "ignore", "reply"]
-        self.action_descriptions = {
-            "mark_spam": "🚫 Mark as Spam",
-            "mark_important": "⭐ Mark as Important",
-            "ignore": "😐 Ignore",
-            "reply": "✉️ Reply"
-        }
-        
-        self._load_model()
+    prompt = f"""Classify this email into one of 4 actions:
+0 = mark_spam (obvious spam, scams, promotions)
+1 = mark_important (urgent, deadlines, critical info)
+2 = ignore (informational, newsletters, casual)
+3 = reply (questions, meeting requests, collaboration)
+
+Difficulty: {difficulty}
+Email: {email_text}
+
+Return ONLY the action number (0, 1, 2, or 3)."""
     
-    def _load_model(self):
-        """Load the trained PPO model"""
-        try:
-            # Try multiple paths for model loading
-            model_paths = [
-                "./models/easy/final_model",
-                "models/easy/final_model",
-                "/app/models/easy/final_model"
-            ]
-            
-            for model_path in model_paths:
-                if os.path.exists(f"{model_path}.zip") or os.path.exists(model_path):
-                    print(f"Loading model from: {model_path}")
-                    self.model = PPO.load(model_path)
-                    self.model_loaded = True
-                    print("✅ Model loaded successfully!")
-                    return
-            
-            print("⚠️ No trained model found, will use rule-based fallback")
-            
-        except Exception as e:
-            print(f"❌ Error loading model: {e}")
-            self.model = None
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": "You are an email classification assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.0,
+            max_tokens=10
+        )
+        
+        action = int(response.choices[0].message.content.strip())
+        return max(0, min(3, action))
+    except Exception as e:
+        print(f"LLM error: {e}, using fallback")
+        return 2  # Fallback to ignore
+
+
+def run_evaluation():
+    """
+    Run evaluation on all difficulty levels
+    Emits [START], [STEP], [END] structured logs
+    """
+    env = SmartInboxEnv()
+    difficulties = ["easy", "medium", "hard"]
     
-    def _rule_based_fallback(self, email_text: str, difficulty: str) -> Dict[str, Any]:
-        """Rule-based fallback when model is not available"""
-        email_lower = email_text.lower()
+    print(f"[START] evaluation model={MODEL_NAME} difficulties={len(difficulties)}")
+    
+    all_results = []
+    
+    for difficulty in difficulties:
+        print(f"[START] difficulty={difficulty}")
         
-        # Spam indicators
-        spam_keywords = ['win', 'free', 'money', 'lottery', 'click here', 'urgent', '!!!']
-        is_spam = any(keyword in email_lower for keyword in spam_keywords) and '!!!' in email_text
+        # Run multiple episodes per difficulty
+        env.reset(difficulty=difficulty)
+        episode_reward = 0.0
+        episodes = 5
         
-        # Important indicators
-        important_keywords = ['urgent', 'deadline', 'important', 'critical', 'asap', 'immediate']
-        is_important = any(keyword in email_lower for keyword in important_keywords)
+        for episode in range(episodes):
+            obs = env.reset(difficulty=difficulty)
+            
+            # Get action from LLM
+            action = classify_email_with_llm(obs.email_text, difficulty)
+            
+            # Take step
+            state, reward, done = env.step(action)
+            
+            episode_reward += reward
+            
+            print(f"[STEP] difficulty={difficulty} episode={episode} action={action} "
+                  f"correct={obs.correct_action if hasattr(obs, 'correct_action') else state.correct_action} "
+                  f"reward={reward} done={done}")
         
-        if is_spam:
-            action = "mark_spam"
-            confidence = 0.85
-        elif is_important:
-            action = "mark_important"
-            confidence = 0.75
-        else:
-            action = "ignore"
-            confidence = 0.65
+        # Calculate score for this difficulty
+        score = episode_reward / episodes
+        print(f"[END] difficulty={difficulty} episodes={episodes} "
+              f"total_reward={episode_reward} score={score:.2f}")
         
-        return {
-            "action": action,
-            "action_emoji": self.action_descriptions[action],
-            "confidence": confidence * 100,
+        all_results.append({
             "difficulty": difficulty,
-            "model_used": "rule_based_fallback"
-        }
+            "episodes": episodes,
+            "total_reward": episode_reward,
+            "score": score
+        })
     
-    def predict(self, email_text: str, difficulty: str = "easy") -> Dict[str, Any]:
-        """
-        Predict the best action for an email
-        
-        Args:
-            email_text: The email text to classify
-            difficulty: Difficulty level (easy, medium, hard)
-            
-        Returns:
-            Dictionary with action, confidence, and metadata
-        """
-        if not email_text or not email_text.strip():
-            return {
-                "error": "Email text cannot be empty",
-                "status": "error"
-            }
-        
-        try:
-            # Initialize environment if not done
-            if self.env is None or self.env.difficulty != difficulty:
-                self.env = EmailRLEnv(difficulty=difficulty)
-            
-            # Vectorize email
-            obs = self.env._vectorize_email(email_text.strip())
-            
-            # Get prediction from model
-            if self.model_loaded and self.model:
-                action, _ = self.model.predict(obs, deterministic=True)
-                
-                # Calculate confidence using model's policy
-                try:
-                    obs_tensor = self.model.policy.obs_to_tensor(obs)[0]
-                    with torch.no_grad():
-                        actions_values = self.model.policy.forward(obs_tensor)
-                        probs = torch.nn.functional.softmax(actions_values[0], dim=0)
-                        confidence = probs[action].item() * 100
-                except Exception as e:
-                    print(f"Confidence calculation error: {e}")
-                    confidence = 75.0
-                
-                action_name = self.action_names[action]
-                
-                return {
-                    "action": action_name,
-                    "action_emoji": self.action_descriptions[action_name],
-                    "confidence": confidence,
-                    "difficulty": difficulty,
-                    "model_used": "ppo_rl_model",
-                    "email_text": email_text.strip()
-                }
-            else:
-                # Fallback to rule-based
-                return self._rule_based_fallback(email_text, difficulty)
-                
-        except Exception as e:
-            return {
-                "error": f"Prediction failed: {str(e)}",
-                "status": "error",
-                "email_text": email_text
-            }
-
-
-# Global inference instance
-inference = SmartInboxInference()
+    # Final summary
+    avg_score = sum(r["score"] for r in all_results) / len(all_results)
+    print(f"[END] evaluation_complete avg_score={avg_score:.2f} "
+          f"model={MODEL_NAME}")
+    
+    return all_results, avg_score
 
 
 def handler(event: Dict[str, Any]) -> Dict[str, Any]:
     """
-    OpenEnv/Hugging Face Inference API handler
-    
-    Args:
-        event: Dictionary with 'inputs' key containing email data
-            Example: {"inputs": {"text": "Email content", "difficulty": "easy"}}
-    
-    Returns:
-        Dictionary with prediction results
+    Hugging Face / OpenEnv inference handler
     """
     try:
-        # Extract input
         if isinstance(event, str):
             event = json.loads(event)
         
@@ -177,58 +136,51 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
         else:
             return {"error": "Invalid input format"}
         
-        # Make prediction
-        result = inference.predict(email_text, difficulty)
+        # Classify email
+        action = classify_email_with_llm(email_text, difficulty)
+        action_names = ["mark_spam", "mark_important", "ignore", "reply"]
         
         return {
             "status": "success",
-            "result": result
+            "result": {
+                "action": action,
+                "action_name": action_names[action],
+                "difficulty": difficulty,
+                "email_text": email_text
+            }
         }
         
     except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e)
-        }
+        return {"error": str(e)}
 
 
 def reset():
-    """
-    OpenEnv reset function - reinitializes the inference engine
-    This is called by OpenEnv validation system
-    """
-    global inference
-    print("🔄 Resetting inference engine...")
-    inference = SmartInboxInference()
-    print("✅ Inference engine reset complete")
+    """OpenEnv reset endpoint"""
     return {"status": "success", "message": "Inference engine reset"}
 
 
 def health_check():
-    """Health check endpoint for OpenEnv"""
+    """Health check endpoint"""
     return {
         "status": "healthy",
-        "model_loaded": inference.model_loaded,
-        "service": "smart-inbox-assistant"
+        "model": MODEL_NAME,
+        "api_url": API_BASE_URL
     }
 
 
 if __name__ == "__main__":
-    # Test the inference
-    test_emails = [
-        ("Win money now!!! Click here immediately", "easy"),
-        ("URGENT: Submit assignment before midnight", "medium"),
-        ("Can we meet tomorrow to discuss the project?", "hard")
-    ]
+    print("="*60)
+    print("Smart Inbox Assistant - OpenEnv Inference")
+    print(f"Model: {MODEL_NAME}")
+    print(f"API: {API_BASE_URL}")
+    print("="*60)
+    
+    results, avg_score = run_evaluation()
     
     print("\n" + "="*60)
-    print("Testing Smart Inbox Inference")
-    print("="*60 + "\n")
-    
-    for email, difficulty in test_emails:
-        result = inference.predict(email, difficulty)
-        print(f"📧 Email: {email}")
-        print(f"   Action: {result.get('action_emoji', result.get('action'))}")
-        print(f"   Confidence: {result.get('confidence', 0):.1f}%")
-        print(f"   Model: {result.get('model_used')}")
-        print()
+    print("Results Summary:")
+    for r in results:
+        print(f"  {r['difficulty']}: score={r['score']:.2f} "
+              f"episodes={r['episodes']}")
+    print(f"  Average Score: {avg_score:.2f}")
+    print("="*60)

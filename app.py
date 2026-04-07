@@ -224,4 +224,15 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     """)
 
 if __name__ == "__main__":
-    demo.launch()
+    # Start FastAPI server for OpenEnv compatibility
+    import uvicorn
+    import threading
+    
+    # Gradio runs in background
+    gradio_thread = threading.Thread(target=lambda: demo.launch(server_name="0.0.0.0", server_port=7861, quiet=True), daemon=True)
+    gradio_thread.start()
+    
+    # Import and run API server
+    from server import app as api_app
+    print("🚀 Starting API Server on port 7860...")
+    uvicorn.run(api_app, host="0.0.0.0", port=7860)

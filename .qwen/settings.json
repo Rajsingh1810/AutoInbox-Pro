@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(pip list)",
+      "Bash(findstr *)",
+      "Bash(huggingface-cli *)",
+      "Bash(taskkill *)",
+      "Bash(timeout *)"
+    ]
+  },
+  "$version": 3
+}

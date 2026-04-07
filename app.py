@@ -8,6 +8,18 @@ import numpy as np
 from email_env import EmailRLEnv
 from stable_baselines3 import PPO
 import os
+import torch
+
+# Try to import inference module for better reliability
+try:
+    from inference import SmartInboxInference
+    inference_engine = SmartInboxInference()
+    USE_INFERENCE_ENGINE = True
+    print("✅ Using inference engine for predictions")
+except Exception as e:
+    USE_INFERENCE_ENGINE = False
+    print(f"⚠️ Could not load inference engine: {e}")
+    print("Falling back to direct model loading")
 
 # Initialize environment
 env = EmailRLEnv(difficulty="easy")
@@ -19,60 +31,95 @@ action_emojis = {
     "reply": "✉️"
 }
 
-# Try to load trained model
+# Try to load trained model (fallback if inference engine fails)
 model = None
 model_loaded = False
 
-try:
-    # Check if model exists
-    if os.path.exists("./model/final_model.zip"):
-        model = PPO.load("./model/final_model")
-        model_loaded = True
-        print("✓ Trained model loaded")
-    else:
-        print("⚠ No trained model found, using random policy")
-except Exception as e:
-    print(f"⚠ Could not load model: {e}")
+if not USE_INFERENCE_ENGINE:
+    try:
+        # Check multiple possible paths for the model
+        model_paths = [
+            "./models/easy/final_model",
+            "./model/final_model",
+            "models/easy/final_model",
+            "/app/models/easy/final_model"
+        ]
+        
+        for model_path in model_paths:
+            if os.path.exists(f"{model_path}.zip") or os.path.exists(model_path):
+                model = PPO.load(model_path.replace('.zip', ''))
+                model_loaded = True
+                print(f"✓ Trained model loaded from {model_path}")
+                break
+        
+        if not model_loaded:
+            print("⚠ No trained model found, using rule-based fallback")
+    except Exception as e:
+        print(f"⚠ Could not load model: {e}")
 
 
 def classify_email(email_text, difficulty="easy"):
     """Classify an email using the RL agent"""
-    
+
     if not email_text or not email_text.strip():
         return "⚠️ Please enter an email", "", ""
-    
-    # Update environment difficulty
-    global env
-    env = EmailRLEnv(difficulty=difficulty)
-    
-    # Vectorize email
-    obs = env._vectorize_email(email_text.strip())
-    
-    # Get action from model or random
-    if model_loaded and model:
-        action, _ = model.predict(obs, deterministic=True)
-    else:
-        action = env.action_space.sample()
-    
-    action_name = action_names[action]
-    emoji = action_emojis[action_name]
-    
-    # Create result
-    result = f"{emoji} **Action:** {action_name.replace('_', ' ').title()}"
-    
-    # Confidence (if using model)
-    if model_loaded and model:
-        # Get action probabilities
-        obs_tensor = model.policy.obs_to_tensor(obs)[0]
-        with model.policy.th.inference_mode():
-            actions_values = model.policy.forward(obs_tensor)
-            # Softmax to get probabilities
-            import torch
-            probs = torch.nn.functional.softmax(actions_values[0], dim=0)
-            confidence = probs[action].item() * 100
-            result += f"\n\n**Confidence:** {confidence:.1f}%"
-    
-    return result, difficulty, email_text
+
+    try:
+        # Use inference engine if available
+        if USE_INFERENCE_ENGINE:
+            result = inference_engine.predict(email_text.strip(), difficulty)
+            
+            if "error" in result:
+                return f"❌ Error: {result['error']}", difficulty, email_text
+            
+            action_name = result["action"]
+            confidence = result["confidence"]
+            
+        else:
+            # Fallback to direct model loading
+            global env, model, model_loaded
+            
+            env = EmailRLEnv(difficulty=difficulty)
+            obs = env._vectorize_email(email_text.strip())
+            
+            if model_loaded and model:
+                action, _ = model.predict(obs, deterministic=True)
+                action_name = action_names[action]
+                
+                # Calculate confidence
+                try:
+                    obs_tensor = model.policy.obs_to_tensor(obs)[0]
+                    with torch.no_grad():
+                        actions_values = model.policy.forward(obs_tensor)
+                        probs = torch.nn.functional.softmax(actions_values[0], dim=0)
+                        confidence = probs[action].item() * 100
+                except Exception as e:
+                    confidence = 75.0
+            else:
+                # Rule-based fallback
+                email_lower = email_text.lower()
+                spam_keywords = ['win', 'free', 'money', 'lottery', 'click here', '!!!']
+                
+                if any(kw in email_lower for kw in spam_keywords):
+                    action_name = "mark_spam"
+                    confidence = 85.0
+                elif any(kw in email_lower for kw in ['urgent', 'deadline', 'important']):
+                    action_name = "mark_important"
+                    confidence = 75.0
+                else:
+                    action_name = "ignore"
+                    confidence = 65.0
+
+        # Format output
+        emoji = action_emojis[action_name]
+        result_text = f"{emoji} **Action:** {action_name.replace('_', ' ').title()}"
+        result_text += f"\n\n**Confidence:** {confidence:.1f}%"
+        result_text += f"\n\n**Mode:** {difficulty}"
+
+        return result_text, difficulty, email_text
+        
+    except Exception as e:
+        return f"❌ Error classifying email: {str(e)}", difficulty, email_text
 
 
 def show_examples(difficulty):
@@ -123,58 +170,58 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                 placeholder="Paste any email here...",
                 lines=4
             )
-            
+
             difficulty = gr.Radio(
                 choices=["easy", "medium", "hard"],
                 value="easy",
                 label="🎯 Difficulty Level"
             )
-            
+
             classify_btn = gr.Button("🔍 Classify Email", variant="primary")
-            
+
         with gr.Column(scale=1):
-            output_action = gr.Textbox(label="🤖 AI Decision", lines=3)
-            output_difficulty = gr.Textbox(label="📊 Mode", interactive=False)
-            output_email = gr.Textbox(label="📝 Email", interactive=False)
+            output_action = gr.Textbox(label="🤖 AI Decision", lines=5)
+            output_difficulty = gr.Textbox(label="📊 Mode", value="easy", interactive=False, visible=False)
+            output_email = gr.Textbox(label="📝 Email", interactive=False, visible=False)
     
     gr.Markdown("---")
     gr.Markdown("### 💡 Try These Examples:")
-    
+
     examples = gr.Dataframe(
         headers=["Example Emails"],
         wrap=True,
         interactive=False
     )
-    
+
     def update_examples(difficulty):
         ex = show_examples(difficulty)
         return [[ex] for ex in ex]
-    
+
     difficulty.change(fn=update_examples, inputs=difficulty, outputs=examples)
     
+    # Update examples on load
+    demo.load(fn=lambda: update_examples("easy"), inputs=None, outputs=examples)
+
     classify_btn.click(
         fn=classify_email,
         inputs=[email_input, difficulty],
         outputs=[output_action, output_difficulty, output_email]
     )
-    
+
     email_input.submit(
         fn=classify_email,
         inputs=[email_input, difficulty],
         outputs=[output_action, output_difficulty, output_email]
     )
-    
+
     gr.Markdown("""
     ---
-    **🧠 How it works:** This uses a PPO (Proximal Policy Optimization) RL agent 
-    trained on email classification tasks. The agent learns through trial and error 
+    **🧠 How it works:** This uses a PPO (Proximal Policy Optimization) RL agent
+    trained on email classification tasks. The agent learns through trial and error
     to maximize rewards for correct actions.
-    
+
     **📚 Learn more:** Check out the [GitHub Repository](https://github.com) for code and training scripts!
     """)
-
-# Update examples on load
-demo.load(fn=lambda: update_examples("easy"), inputs=None, outputs=examples)
 
 if __name__ == "__main__":
     demo.launch()

@@ -1,9 +1,12 @@
-title: Smart Inbox Assistant - RL Environment
+---
+title: AutoInbox Pro - RL Email Classifier
 emoji: 📧
-colorFrom: blue
-colorTo: purple
+colorFrom: green
+colorTo: blue
 sdk: gradio
-sdk_version: 4.0.0
+sdk_version: 5.47.1
 app_file: app.py
-pinned: false
+python_version: 3.11.8
 license: mit
+short_description: AI email classifier using RL
+---
